@@ -9,7 +9,7 @@ SIMULATED_TRADES_CSV = "simulated_trades.csv"
 GRADED_SIMULATED_TRADES_CSV = "graded_simulated_trades.csv"
 
 DEGREE_SYMBOL = "\N{DEGREE SIGN}"
-DEGREE_MARKERS = ("Ã‚Â°", "Â°", DEGREE_SYMBOL)
+DEGREE_MARKERS = ("\u00c2\u00b0", "\u00b0", DEGREE_SYMBOL)
 DEGREE_REGEX = re.escape(DEGREE_SYMBOL)
 
 
@@ -35,25 +35,31 @@ def normalize_title(title):
 
 
 def clean_title(title):
-    normalized = normalize_title(title)
-    return normalized.replace("**", "").strip()
+    return normalize_title(title).replace("**", "").strip()
+
+
+def to_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def to_bool(value):
+    return str(value).strip().lower() == "true"
 
 
 def format_temp_value(value):
-    try:
-        numeric_value = float(value)
-    except (TypeError, ValueError):
+    numeric_value = to_float(value, None)
+    if numeric_value is None:
         return str(value)
-
     if numeric_value.is_integer():
         return str(int(numeric_value))
-
     return f"{numeric_value:.2f}".rstrip("0").rstrip(".")
 
 
 def readable_condition_from_title(title):
     normalized_title = clean_title(title).lower()
-
     patterns = [
         (
             rf"(-?\d+(?:\.\d+)?)\s*{DEGREE_REGEX}\s*or\s*below",
@@ -109,17 +115,6 @@ def readable_condition_from_title(title):
     return ""
 
 
-def to_float(value, default=0.0):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def to_bool(value):
-    return str(value).strip().lower() == "true"
-
-
 def get_edge_bucket(best_edge):
     if 0.02 <= best_edge < 0.05:
         return "0.02 <= edge < 0.05"
@@ -135,11 +130,9 @@ def load_demo_data():
     simulated_rows = load_csv_rows(SIMULATED_TRADES_CSV)
     graded_rows = load_csv_rows(GRADED_SIMULATED_TRADES_CSV)
 
-    simulated_lookup = {}
-    for row in simulated_rows:
-        simulated_lookup[trade_key(row)] = row
-
+    simulated_lookup = {trade_key(row): row for row in simulated_rows}
     enriched_graded_rows = []
+
     for row in graded_rows:
         simulated_row = simulated_lookup.get(trade_key(row), {})
         title = clean_title(simulated_row.get("title", ""))
@@ -159,12 +152,12 @@ def load_demo_data():
             "recommended_position_float": recommended_position,
             "realized_pnl_float": realized_pnl,
             "best_edge_float": best_edge,
-            "result_display": "✅ WIN" if trade_won else "❌ LOSS",
+            "result_display": "WIN" if trade_won else "LOSS",
             "audit_summary": (
                 f"{row.get('city_name', '')} | {condition} | {row.get('side', '')} | "
                 f"actual: {format_temp_value(actual_high_temp)} | "
                 f"outcome: {row.get('resolved_outcome', '')} | "
-                f"{'✅ WIN' if trade_won else '❌ LOSS'}"
+                f"{'WIN' if trade_won else 'LOSS'}"
             ),
         })
 
@@ -178,6 +171,10 @@ def summarize_results(graded_rows):
     total_dollars_bet = sum(row["recommended_position_float"] for row in graded_rows)
     roi = (total_pnl / total_dollars_bet) if total_dollars_bet else 0.0
     win_rate = (wins / total_trades * 100.0) if total_trades else 0.0
+    avg_edge = (
+        sum(row["best_edge_float"] for row in graded_rows) / total_trades
+        if total_trades else 0.0
+    )
 
     return {
         "total_trades": total_trades,
@@ -186,6 +183,7 @@ def summarize_results(graded_rows):
         "total_pnl": total_pnl,
         "total_dollars_bet": total_dollars_bet,
         "roi": roi,
+        "avg_edge": avg_edge,
     }
 
 
@@ -287,114 +285,151 @@ def build_audit_rows(graded_rows):
     return rows
 
 
-def render_intro():
+def render_section_header(title, body=None):
+    st.markdown(f"## {title}")
+    if body:
+        st.write(body)
+
+
+def render_hero():
     st.title("Weather Market Audit Demo")
-    st.caption("Built with Codex for the Codex Creator Challenge")
+    st.markdown(
+        "### This project identifies and exploits inefficiencies in weather prediction markets using data-driven expected value analysis."
+    )
+    st.caption("Built with Codex")
 
     st.markdown(
         """
-        <div style="padding:0.9rem 1rem;border:1px solid #f0c36d;background:#fff8e6;border-radius:0.75rem;">
-            <strong>PUBLIC DEMO MODE</strong> — read-only dashboard. Live trading, API keys, and private execution controls removed.
+        <div style="padding: 0.95rem 1.1rem; border-radius: 0.8rem; border: 1px solid #e5e7eb; background: #f8fafc; font-weight: 600;">
+            PUBLIC DEMO MODE - No live trading, no API keys, read-only simulation
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    problem_col, solution_col = st.columns(2)
-    with problem_col:
-        st.subheader("Problem")
-        st.write("Weather markets can misprice discrete temperature outcomes, creating confusing odds for traders trying to reason about fair value.")
-    with solution_col:
-        st.subheader("Solution")
-        st.write("This AI-assisted decision system compares market prices against model-estimated fair value, simulates decisions, and audits the results after official weather resolution.")
+
+def render_problem_solution():
+    cols = st.columns(2)
+    with cols[0]:
+        render_section_header(
+            "Problem",
+            (
+                "Prediction markets turn uncertain forecasts into tradable prices, but those prices do not always line up with "
+                "real-world weather expectations. When the market price drifts away from a reasonable probability estimate, "
+                "a disciplined trader can end up with a measurable edge."
+            ),
+        )
+    with cols[1]:
+        render_section_header(
+            "Solution",
+            (
+                "This bot compares model-estimated probability against market price, looks for positive expected value, and only "
+                "simulates trades when the edge clears a defined threshold. The public demo strips out live execution and shows "
+                "the full decision-and-grading loop in a safe read-only format."
+            ),
+        )
 
 
 def render_how_it_works():
-    st.subheader("How It Works")
-    st.caption("Why it matters: judges and users should be able to understand the workflow in one quick scan.")
-
-    cols = st.columns(5)
-    steps = [
-        ("1. Data ingestion", "Saved market snapshots and resolved outcomes are loaded from local CSVs for a safe, reproducible demo."),
-        ("2. Probability model", "A weather-specific model estimates fair probabilities for each contract based on forecasted temperature ranges."),
-        ("3. Edge detection", "Market prices are compared to model-estimated fair value to identify where pricing looked attractive."),
-        ("4. Simulated execution", "Qualified trades are paper-traded only, keeping the system useful without taking live market risk."),
-        ("5. NWS grading", "Resolved trades are graded against National Weather Service actual highs to measure real-world performance."),
-    ]
-
-    for col, (title, body) in zip(cols, steps):
-        with col:
-            st.markdown(f"**{title}**")
-            st.write(body)
+    render_section_header("How It Works")
+    st.markdown(
+        """
+        - **Pull market data** from saved local snapshots of simulated trades and graded results.
+        - **Estimate true probability** for each weather contract using a forecast-informed model.
+        - **Calculate edge** by comparing market price with model-estimated fair value.
+        - **Simulate trade** decisions instead of sending live orders.
+        - **Grade using actual outcomes** from official weather observations after the event resolves.
+        """
+    )
 
 
 def render_results(simulated_rows, graded_rows):
-    st.subheader("Results")
-    st.caption("Why it matters: this section compresses the headline value of the project into a few decision-ready metrics.")
+    render_section_header(
+        "Results",
+        "Win rate shows how often the simulated side matched the resolved market outcome. PnL and ROI show whether the paper trading decisions would have made money after sizing and grading."
+    )
 
     summary = summarize_results(graded_rows)
-    metrics = st.columns(5)
-    metrics[0].metric("Total simulated trades", len(simulated_rows))
-    metrics[1].metric("Graded trades", summary["total_trades"])
-    metrics[2].metric("Win rate", f"{summary['win_rate']:.2f}%")
-    metrics[3].metric("Total PnL", f"${summary['total_pnl']:.2f}")
-    metrics[4].metric("ROI", f"{summary['roi'] * 100:.2f}%")
+    metric_cols = st.columns(5)
+    metric_cols[0].metric("Total simulated trades", len(simulated_rows))
+    metric_cols[1].metric("Graded trades", summary["total_trades"])
+    metric_cols[2].metric("Win rate", f"{summary['win_rate']:.2f}%")
+    metric_cols[3].metric("Total PnL", f"${summary['total_pnl']:.2f}")
+    metric_cols[4].metric("ROI", f"{summary['roi'] * 100:.2f}%")
 
+    submetric_cols = st.columns(3)
+    submetric_cols[0].metric("Wins", summary["wins"])
+    submetric_cols[1].metric("Total dollars bet", f"${summary['total_dollars_bet']:.2f}")
+    submetric_cols[2].metric("Average edge", f"{summary['avg_edge']:.3f}")
+
+    st.caption("City-level performance helps show where the workflow appears strongest across the demo dataset.")
     st.dataframe(
         summarize_city_performance(graded_rows),
         use_container_width=True,
         hide_index=True,
         column_config={
-            "win_rate": st.column_config.NumberColumn(format="%.2f%%"),
-            "total_pnl": st.column_config.NumberColumn(format="$%.2f"),
-            "roi": st.column_config.NumberColumn(format="%.2f%%"),
+            "city_name": st.column_config.TextColumn("City"),
+            "trades": st.column_config.NumberColumn("Trades"),
+            "win_rate": st.column_config.NumberColumn("Win rate", format="%.2f%%"),
+            "total_pnl": st.column_config.NumberColumn("Total PnL", format="$%.2f"),
+            "roi": st.column_config.NumberColumn("ROI", format="%.2f%%"),
         },
     )
 
 
 def render_insights(graded_rows):
-    st.subheader("Insights")
-    st.caption("Why it matters: breakdowns by side and edge bucket show where the system appears stronger and where it deserves caution.")
+    render_section_header(
+        "Insights",
+        "These breakdowns make it easier to judge whether performance changes by trade side or by the size of the detected edge."
+    )
 
-    insight_tabs = st.tabs(["YES vs NO", "Edge Buckets"])
+    tabs = st.tabs(["YES vs NO performance", "Edge bucket performance"])
 
-    with insight_tabs[0]:
+    with tabs[0]:
+        st.caption("This table compares how the system performed when taking the YES side versus the NO side.")
         st.dataframe(
             summarize_side_performance(graded_rows),
             use_container_width=True,
             hide_index=True,
             column_config={
-                "win_rate": st.column_config.NumberColumn(format="%.2f%%"),
-                "total_pnl": st.column_config.NumberColumn(format="$%.2f"),
-                "avg_pnl_per_trade": st.column_config.NumberColumn(format="$%.2f"),
-                "total_dollars_bet": st.column_config.NumberColumn(format="$%.2f"),
-                "roi": st.column_config.NumberColumn(format="%.2f%%"),
+                "side": st.column_config.TextColumn("Side"),
+                "total_trades": st.column_config.NumberColumn("Trades"),
+                "win_rate": st.column_config.NumberColumn("Win rate", format="%.2f%%"),
+                "total_pnl": st.column_config.NumberColumn("Total PnL", format="$%.2f"),
+                "avg_pnl_per_trade": st.column_config.NumberColumn("Avg PnL / trade", format="$%.2f"),
+                "total_dollars_bet": st.column_config.NumberColumn("Total dollars bet", format="$%.2f"),
+                "roi": st.column_config.NumberColumn("ROI", format="%.2f%%"),
             },
         )
 
-    with insight_tabs[1]:
+    with tabs[1]:
+        st.caption("Edge buckets help show whether stronger expected-value signals translated into better graded outcomes.")
         st.dataframe(
             summarize_edge_buckets(graded_rows),
             use_container_width=True,
             hide_index=True,
             column_config={
-                "win_rate": st.column_config.NumberColumn(format="%.2f%%"),
-                "total_pnl": st.column_config.NumberColumn(format="$%.2f"),
-                "avg_pnl": st.column_config.NumberColumn(format="$%.2f"),
-                "avg_dollars_bet": st.column_config.NumberColumn(format="$%.2f"),
-                "roi": st.column_config.NumberColumn(format="%.2f%%"),
+                "edge_bucket": st.column_config.TextColumn("Edge bucket"),
+                "trades": st.column_config.NumberColumn("Trades"),
+                "win_rate": st.column_config.NumberColumn("Win rate", format="%.2f%%"),
+                "total_pnl": st.column_config.NumberColumn("Total PnL", format="$%.2f"),
+                "avg_pnl": st.column_config.NumberColumn("Avg PnL", format="$%.2f"),
+                "avg_dollars_bet": st.column_config.NumberColumn("Avg dollars bet", format="$%.2f"),
+                "roi": st.column_config.NumberColumn("ROI", format="%.2f%%"),
             },
         )
 
 
 def render_audit_view(graded_rows):
-    st.subheader("Audit View")
-    st.caption("Why it matters: every graded trade can be inspected against the actual temperature, settlement condition, and final win/loss outcome.")
+    render_section_header(
+        "Audit View",
+        "This is the most transparent part of the demo: each row shows the market condition, chosen side, actual high temperature, resolved outcome, and whether the simulated trade won or lost."
+    )
 
     audit_rows = build_audit_rows(graded_rows)
     city_options = ["All cities"] + sorted({row["city_name"] for row in audit_rows})
     side_options = ["All sides", "YES", "NO"]
-    result_options = ["All results", "✅ WIN", "❌ LOSS"]
+    result_options = ["All results", "WIN", "LOSS"]
 
     filter_cols = st.columns(3)
     selected_city = filter_cols[0].selectbox("City filter", city_options)
@@ -411,12 +446,24 @@ def render_audit_view(graded_rows):
             continue
         filtered_rows.append(row)
 
+    st.caption(
+        f"Column guide: `condition` is the readable market rule (for example `<61{DEGREE_SYMBOL}` or `70{DEGREE_SYMBOL} to 71{DEGREE_SYMBOL}`), "
+        "`resolved_outcome` is the winning market side, and `trade_won` indicates whether the simulated position matched that outcome."
+    )
     st.dataframe(
         filtered_rows,
         use_container_width=True,
         hide_index=True,
         column_config={
-            "actual_high_temp": st.column_config.NumberColumn(format="%.2f"),
+            "city_name": st.column_config.TextColumn("City"),
+            "market_ticker": st.column_config.TextColumn("Market ticker"),
+            "condition": st.column_config.TextColumn("Condition"),
+            "side": st.column_config.TextColumn("Side taken"),
+            "actual_high_temp": st.column_config.NumberColumn("Actual high temp", format="%.2f"),
+            "resolved_outcome": st.column_config.TextColumn("Resolved outcome"),
+            "trade_won": st.column_config.CheckboxColumn("Trade won"),
+            "result_display": st.column_config.TextColumn("Result"),
+            "audit_summary": st.column_config.TextColumn("Audit summary"),
         },
     )
 
@@ -430,6 +477,7 @@ def main():
         .block-container {
             padding-top: 2rem;
             padding-bottom: 3rem;
+            max-width: 1200px;
         }
         </style>
         """,
@@ -438,10 +486,16 @@ def main():
 
     simulated_rows, graded_rows = load_demo_data()
 
-    render_intro()
+    render_hero()
+    st.write("")
+    render_problem_solution()
+    st.write("")
     render_how_it_works()
+    st.write("")
     render_results(simulated_rows, graded_rows)
+    st.write("")
     render_insights(graded_rows)
+    st.write("")
     render_audit_view(graded_rows)
 
 
